@@ -1,0 +1,43 @@
+# macOS
+.DS_Store
+
+# Node (server, web, mobile-app)
+node_modules/
+npm-debug.log*
+yarn-error.log*
+pnpm-lock.yaml
+*.log
+
+# Build / cache
+dist/
+build/
+.tmp/
+.cache/
+
+# Vite
+web/.vite/
+web/dist/
+
+# Expo / React Native
+mobile-app/.expo/
+mobile-app/.expo-shared/
+mobile-app/android/
+mobile-app/ios/
+mobile-app/.gradle/
+mobile-app/.idea/
+mobile-app/expo-build/
+mobile-app/metro-cache/
+
+# Environment files (we commit only the example files)
+*.env
+.env.*
+server/.env
+web/.env
+mobile-app/.env
+
+# VS Code / editor
+.vscode/
+.idea/
+
+# Local WP generated stuff (we'll track our plugin code separately)
+# Do NOT commit your Local site files; they live outside this repo.
