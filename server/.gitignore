@@ -41,3 +41,4 @@ mobile-app/.env
 
 # Local WP generated stuff (we'll track our plugin code separately)
 # Do NOT commit your Local site files; they live outside this repo.
+.env
