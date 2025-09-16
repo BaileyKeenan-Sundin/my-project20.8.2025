@@ -160,7 +160,7 @@ app.post("/webhooks/wp", (req, res) => {
 // ──────────────────────────────────────────────────────────────
 // Start server
 // ──────────────────────────────────────────────────────────────
-httpServer.listen(PORT, () => {
+httpServer.listen(PORT, process.env.HOST || "0.0.0.0", () => {
   console.log(`HTTP+Socket server on http://localhost:${PORT}`);
   console.log(`Socket.IO path: /socket.io  CORS origin: ${CORS_ORIGIN}`);
   console.log(`WP base: ${WP}`);

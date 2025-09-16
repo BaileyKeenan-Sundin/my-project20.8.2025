@@ -1,1 +1,4 @@
 mobile-app/
+
+# Local backups
+server/*.bak
