@@ -5,12 +5,13 @@ import fetch from "node-fetch";
 import * as dotenv from "dotenv";
 import http from "http";
 import { Server as SocketIOServer } from "socket.io";
+import { findEvents, getEventById, invalidateEventsCache } from "./lib/events.js";
 
 dotenv.config();
 
 const app = express();
 const PORT = process.env.PORT || 3000;
-const WP = (process.env.WP_BASE_URL || "").replace(/\/$/, ""); // e.g. http://example.local
+const WP = (process.env.WP_BASE_URL || "").replace(/\/$/, ""); // e.g. http://alexandrapalace.local
 const CORS_ORIGIN = process.env.CORS_ORIGIN || "http://localhost:5173";
 const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET || "devsecret123";
 
@@ -92,7 +93,7 @@ app.get("/api/wp/posts", async (req, res) => {
 });
 
 // ──────────────────────────────────────────────────────────────
-// WordPress custom Events
+// WordPress custom Events (raw passthrough)
 // ──────────────────────────────────────────────────────────────
 app.get("/api/wp/events", async (_req, res) => {
   try {
@@ -104,20 +105,27 @@ app.get("/api/wp/events", async (_req, res) => {
 });
 
 // ──────────────────────────────────────────────────────────────
-// Legacy/local stub
+// Normalized Events API
 // ──────────────────────────────────────────────────────────────
-app.get("/api/events", (_req, res) => {
-  res.json([
-    {
-      id: "sample-1",
-      title: "Sample Event",
-      start: new Date().toISOString(),
-      venue: "Main Hall",
-      url: "https://example.com/buy",
-      availability: "in_stock",
-      price_from: 10,
-    },
-  ]);
+app.get("/api/events", async (req, res) => {
+  try {
+    const limit = Math.max(1, Math.min(100, Number(req.query.limit || 50)));
+    const q = String(req.query.q || "");
+    const data = await findEvents({ limit, q });
+    res.json(data);
+  } catch (e) {
+    res.status(500).json({ error: String(e) });
+  }
+});
+
+app.get("/api/events/:id", async (req, res) => {
+  try {
+    const row = await getEventById(req.params.id); // pass just the id
+    if (!row) return res.status(404).json({ error: "not found" });
+    res.json(row);
+  } catch (e) {
+    res.status(500).json({ error: String(e) });
+  }
 });
 
 // ──────────────────────────────────────────────────────────────
@@ -132,6 +140,8 @@ app.post("/ai/chat", (req, res) => {
 // Admin ping
 // ──────────────────────────────────────────────────────────────
 app.get("/admin/ping", (_req, res) => {
+  // clear caches so clients get fresh data
+  invalidateEventsCache();
   io.emit("event-updated", { source: "admin-ping", ts: Date.now() });
   res.json({ ok: true, emitted: "event-updated" });
 });
@@ -144,7 +154,7 @@ app.post("/webhooks/wp", (req, res) => {
     return res.status(401).json({ ok: false, error: "unauthorized" });
   }
 
-  const { id, action = "updated", source = "unknown" } = req.body || {};
+  const { id, action = "updated" } = req.body || {};
   const key = `${id}:${action}`;
 
   if (shouldDrop(key)) {
@@ -153,6 +163,7 @@ app.post("/webhooks/wp", (req, res) => {
   }
 
   console.log("[webhook] received:", req.body);
+  invalidateEventsCache();
   io.emit("event-updated", { source: "wp-webhook", payload: req.body, ts: Date.now() });
   res.json({ ok: true, received: req.body });
 });
