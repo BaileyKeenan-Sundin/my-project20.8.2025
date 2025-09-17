@@ -22,6 +22,14 @@ function intentFrom(text) {
   return { type: "list" };
 }
 
+// decode simple HTML entities in titles from WP
+function decode(str = "") {
+  if (!str) return "";
+  const txt = document.createElement("textarea");
+  txt.innerHTML = str;
+  return txt.value;
+}
+
 export default function Chat({ apiBase }) {
   const BASE = apiBase || FALLBACK_API;
 
@@ -56,7 +64,7 @@ export default function Chat({ apiBase }) {
       if (intent.type === "by-id") {
         const d = await fetchDetail(intent.id);
         const msg = d?.title
-          ? `Here’s that event:\n\n• ${d.title}${d.url ? `\n${d.url}` : ""}`
+          ? `Here’s that event:\n\n• ${decode(d.title)}${d.url ? `\n${d.url}` : ""}`
           : "I couldn’t find that event id.";
         setMessages(m => [...m, { role: "assistant", text: msg }]);
         setHits(d?.id ? [{ id: d.id, title: d.title }] : []);
@@ -118,12 +126,15 @@ export default function Chat({ apiBase }) {
             {hits.map(h => (
               <li key={h.id} style={{ marginBottom: 8 }}>
                 <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-                  <span>{h.title}</span>
+                  <span>{decode(h.title)}</span>
                   <button
                     onClick={async () => {
                       const d = await fetchDetail(h.id);
-                      const text = d?.url ? `Details: ${d.url}` : "No URL found.";
-                      setMessages(m => [...m, { role: "assistant", text }]);
+                      if (d?.url) {
+                        window.open(d.url, "_blank", "noopener,noreferrer");
+                      } else {
+                        setMessages(m => [...m, { role: "assistant", text: "No URL found." }]);
+                      }
                     }}
                   >
                     Details
