@@ -2,3 +2,7 @@
 	path = wp/example-plugin
 	url = https://github.com/BaileyKeenan-Sundin/example-plugin.git
 	branch = main
+[submodule "wp/ap-theme"]
+	path = wp/ap-theme
+	url = https://github.com/BaileyKeenan-Sundin/ap-theme.git
+	branch = main
