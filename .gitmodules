@@ -1,0 +1,4 @@
+[submodule "wp/example-plugin"]
+	path = wp/example-plugin
+	url = https://github.com/BaileyKeenan-Sundin/example-plugin.git
+	branch = main
