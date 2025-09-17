@@ -27,7 +27,7 @@ export default function App() {
     if (fetchLock.current) return;
     fetchLock.current = true;
     try {
-      const r = await fetch(`${API}/api/wp/events`);
+      const r = await fetch(`${API}/api/events`);
       const data = await r.json();
       setEvents(Array.isArray(data) ? data : []);
       console.log("[client] events refreshed:", data);
@@ -132,12 +132,9 @@ export default function App() {
             </ul>
           )}
         </section>
-
-        <section style={{ marginTop: 24 }}>
-          <h2>Chat</h2>
-          <Chat />
-        </section>
-      </main>
+<hr style={{marginTop:24,marginBottom:24}}/>
+  <Chat apiBase={API} />
+</main>
     </div>
   );
 }
