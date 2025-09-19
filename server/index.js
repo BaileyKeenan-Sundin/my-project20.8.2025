@@ -131,13 +131,13 @@ app.get("/api/events/:id", async (req, res) => {
 
 // ──────────────────────────────────────────────────────────────
 // AI: intent-driven list endpoint (/ai/ask)
-// - Will try to use ./lib/intents.js if present (classifyQuery/buildAnswer)
+// - Will try to use ./lib/ai.js if present (classifyQuery/buildAnswer)
 // - Falls back to a built-in lightweight classifier otherwise
 // ──────────────────────────────────────────────────────────────
 let externalIntents = null;
 try {
   // optional — if you created server/lib/intents.js
-  externalIntents = await import("./lib/intents.js");
+  externalIntents = await import("./lib/ai.js");
   if (!externalIntents || typeof externalIntents.classifyQuery !== "function") {
     externalIntents = null;
   }

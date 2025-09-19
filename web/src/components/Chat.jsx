@@ -1,150 +1,166 @@
-import { useState } from "react";
+// web/src/components/Chat.jsx
+import { useEffect, useRef, useState } from "react";
 
-// Fallback API base if prop isn't provided
-const FALLBACK_API =
-  (import.meta?.env?.VITE_API_BASE && String(import.meta.env.VITE_API_BASE)) ||
-  "http://127.0.0.1:3000";
-
-const STOPWORDS = new Set([
-  "the","a","an","and","or","to","of","for","in","on","at","is","are","be","do",
-  "what","whats","happening","show","shows","event","events","any"
-]);
-
-function intentFrom(text) {
-  const t = (text || "").toLowerCase();
-  const idMatch = t.match(/\b(\d{3,8})\b/);
-  if (idMatch) return { type: "by-id", id: idMatch[1] };
-  if (/(what|whats).*(on|happening|events)/.test(t)) return { type: "list" };
-  if (/(today|tonight|tomorrow|weekend)/.test(t)) return { type: "list" };
-  const terms = t.replace(/[^a-z0-9 ]/g, " ").split(/\s+/)
-    .filter(w => w && w.length > 2 && !STOPWORDS.has(w));
-  if (terms.length) return { type: "search", terms };
-  return { type: "list" };
-}
-
-// decode simple HTML entities in titles from WP
-function decode(str = "") {
-  if (!str) return "";
-  const txt = document.createElement("textarea");
-  txt.innerHTML = str;
-  return txt.value;
-}
-
-export default function Chat({ apiBase }) {
-  const BASE = apiBase || FALLBACK_API;
-
+export default function Chat({ apiBase = "" }) {
   const [input, setInput] = useState("");
-  const [messages, setMessages] = useState([]);
-  const [hits, setHits] = useState([]);
-  const [details, setDetails] = useState({}); // id -> detail
+  const [messages, setMessages] = useState([]); // {role:'user'|'assistant', text:string}
+  const [results, setResults] = useState([]);   // normalized events (subset)
+  const [loading, setLoading] = useState(false);
 
-  async function fetchList(limit = 50) {
-    const r = await fetch(`${BASE}/api/events?limit=${limit}`);
+  // streaming buffer
+  const [streamText, setStreamText] = useState("");
+  const streamRef = useRef("");
+  useEffect(() => { streamRef.current = streamText; }, [streamText]);
+
+  async function fallbackAsk(q) {
+    // Fallback for environments where EventSource isn’t available
+    const r = await fetch(`${apiBase}/ai/ask`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message: q }),
+    });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
     const data = await r.json();
-    return Array.isArray(data) ? data : [];
+    setResults(data.hits || []);
+    setMessages(m => [...m, { role: "assistant", text: data.answer || "" }]);
   }
 
-  async function fetchDetail(id) {
-    if (details[id]) return details[id];
-    const r = await fetch(`${BASE}/api/events/${id}`);
-    const d = await r.json();
-    setDetails(prev => ({ ...prev, [id]: d }));
-    return d;
-  }
-
-  async function submit(e) {
-    e.preventDefault();
-    const text = input.trim();
-    if (!text) return;
-    setMessages(m => [...m, { role: "user", text }]);
-    setInput("");
-
-    const intent = intentFrom(text);
+  function startSSE(q) {
+    let es;
     try {
-      if (intent.type === "by-id") {
-        const d = await fetchDetail(intent.id);
-        const msg = d?.title
-          ? `Here’s that event:\n\n• ${decode(d.title)}${d.url ? `\n${d.url}` : ""}`
-          : "I couldn’t find that event id.";
-        setMessages(m => [...m, { role: "assistant", text: msg }]);
-        setHits(d?.id ? [{ id: d.id, title: d.title }] : []);
-        return;
-      }
-
-      const list = await fetchList(50);
-
-      if (intent.type === "list") {
-        setMessages(m => [...m, { role: "assistant", text: `Here’s what’s on (first ${Math.min(20, list.length)}):` }]);
-        setHits(list.slice(0, 20));
-        return;
-      }
-
-      if (intent.type === "search") {
-        const terms = intent.terms;
-        const matched = list.filter(ev => {
-          const t = (ev.title || "").toLowerCase();
-          return terms.some(term => t.includes(term));
-        });
-        const msg = matched.length
-          ? `I found ${matched.length} matching event(s).`
-          : `I didn’t find matches for “${terms.join(" ")}”.`;
-        setMessages(m => [...m, { role: "assistant", text: msg }]);
-        setHits(matched.slice(0, 20));
-        return;
-      }
+      es = new EventSource(`${apiBase}/ai/chat?message=${encodeURIComponent(q)}`);
     } catch {
-      const hint = BASE ? "" : " (API base URL was empty)";
-      setMessages(m => [...m, { role: "assistant", text: `Something went wrong fetching events${hint}.` }]);
+      return fallbackAsk(q);
+    }
+
+    setStreamText("");
+    setResults([]);
+    setLoading(true);
+
+    es.onmessage = (ev) => {
+      try {
+        const data = JSON.parse(ev.data);
+        if (data.type === "text") {
+          setStreamText(prev => prev + (data.delta || ""));
+        } else if (data.type === "hits") {
+          setResults(Array.isArray(data.hits) ? data.hits : []);
+        }
+      } catch {
+        /* ignore malformed frames */
+      }
+    };
+
+    es.addEventListener("done", () => {
+      es.close();
+      const final = streamRef.current || "";
+      if (final) setMessages(m => [...m, { role: "assistant", text: final }]);
+      setStreamText("");
+      setLoading(false);
+    });
+
+    es.onerror = () => {
+      es.close();
+      setLoading(false);
+      // soft-fallback so the user still gets an answer
+      fallbackAsk(q).catch(() => {
+        setMessages(m => [...m, { role: "assistant", text: "Sorry—something went wrong." }]);
+      });
+    };
+  }
+
+  async function onSubmit(e) {
+    e.preventDefault();
+    const q = input.trim();
+    if (!q || loading) return;
+    setMessages(m => [...m, { role: "user", text: q }]);
+    setInput("");
+    startSSE(q);
+  }
+
+  async function showDetails(id) {
+    try {
+      const r = await fetch(`${apiBase}/api/events/${id}`);
+      const ev = await r.json();
+      const parts = [
+        ev.title ? `**${ev.title}**` : "",
+        ev.venue ? `Venue: ${ev.venue}` : "",
+        ev.start ? `Start: ${ev.start}` : "",
+        ev.url ? `Link: ${ev.url}` : "",
+        ev.content_0_text ? `\n${ev.content_0_text.slice(0, 500)}${ev.content_0_text.length > 500 ? "…" : ""}` : "",
+      ].filter(Boolean);
+      const text = parts.join("\n");
+      setMessages(m => [...m, { role: "assistant", text }]);
+    } catch (e) {
+      setMessages(m => [...m, { role: "assistant", text: "Couldn’t fetch details just now." }]);
     }
   }
 
   return (
-    <div style={{ marginTop: 24, padding: 16, border: "1px solid #ddd", borderRadius: 8 }}>
-      <h2 style={{ marginTop: 0 }}>Ask about events</h2>
-      <form onSubmit={submit} style={{ display: "flex", gap: 8 }}>
-        <input
-          value={input}
-          onChange={e => setInput(e.target.value)}
-          placeholder='Try: "what’s on", "comedy", or an event id like 40467'
-          style={{ flex: 1, padding: 8 }}
-        />
-        <button type="submit">Ask</button>
-      </form>
+    <div style={{ marginTop: 24 }}>
+      <h2>Chat</h2>
 
-      <div style={{ marginTop: 16, display: "grid", gap: 8 }}>
-        {messages.map((m, i) => (
-          <div key={i} style={{ whiteSpace: "pre-wrap" }}>
-            <strong>{m.role === "user" ? "You" : "Assistant"}:</strong> {m.text}
-          </div>
-        ))}
-      </div>
+      <div
+        style={{
+          border: "1px solid #ddd",
+          borderRadius: 8,
+          padding: 16,
+          maxWidth: 820,
+        }}
+      >
+        <div style={{ maxHeight: 220, overflowY: "auto", marginBottom: 12 }}>
+          {messages.map((m, i) => (
+            <div key={i} style={{ whiteSpace: "pre-wrap", margin: "6px 0" }}>
+              <strong>{m.role === "user" ? "You" : "Assistant"}: </strong>
+              <span dangerouslySetInnerHTML={{ __html: m.text }} />
+            </div>
+          ))}
+          {streamText && (
+            <div style={{ whiteSpace: "pre-wrap", margin: "6px 0" }}>
+              <strong>Assistant: </strong>
+              {streamText}
+              <span className="blink" style={{ opacity: 0.5 }}>▌</span>
+            </div>
+          )}
+        </div>
 
-      {!!hits.length && (
-        <div style={{ marginTop: 16 }}>
-          <h3 style={{ marginTop: 0 }}>Results</h3>
-          <ul style={{ paddingLeft: 18, margin: 0 }}>
-            {hits.map(h => (
-              <li key={h.id} style={{ marginBottom: 8 }}>
-                <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-                  <span>{decode(h.title)}</span>
+        <form onSubmit={onSubmit} style={{ display: "flex", gap: 8 }}>
+          <input
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            placeholder="Ask what's on, a date range, a category, or a specific event…"
+            style={{ flex: 1, padding: 10, borderRadius: 6, border: "1px solid #ccc" }}
+            disabled={loading}
+          />
+          <button type="submit" disabled={loading} style={{ padding: "10px 16px" }}>
+            {loading ? "Streaming…" : "Send"}
+          </button>
+        </form>
+
+        {!!results.length && (
+          <div style={{ marginTop: 16 }}>
+            <h3 style={{ margin: "8px 0" }}>Results</h3>
+            <ul style={{ listStyle: "none", paddingLeft: 0, margin: 0 }}>
+              {results.map((ev) => (
+                <li
+                  key={ev.id}
+                  style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 0" }}
+                >
+                  <a href={`${apiBase}/api/events/${ev.id}`} target="_blank" rel="noreferrer">
+                    {ev.title}
+                  </a>
                   <button
-                    onClick={async () => {
-                      const d = await fetchDetail(h.id);
-                      if (d?.url) {
-                        window.open(d.url, "_blank", "noopener,noreferrer");
-                      } else {
-                        setMessages(m => [...m, { role: "assistant", text: "No URL found." }]);
-                      }
-                    }}
+                    type="button"
+                    onClick={() => showDetails(ev.id)}
+                    style={{ padding: "4px 8px" }}
                   >
                     Details
                   </button>
-                </div>
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+      </div>
     </div>
   );
 }
