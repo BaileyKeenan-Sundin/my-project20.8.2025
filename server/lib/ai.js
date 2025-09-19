@@ -9,12 +9,15 @@ import { findEvents } from "./events.js";
 const SHOW_LIMIT = 10;
 
 const CATEGORY_KEYWORDS = {
-  comedy: ["comedy", "stand-up", "standup", "comedian", "laugh"],
-  music: ["music", "concert", "gig", "band", "festival"],
-  family: ["family", "kids", "children"],
-  sports: ["sport", "sports", "snooker", "boxing", "cup", "race"],
-  dance: ["dance", "ballet", "choreography"],
-  exhibition: ["exhibition", "expo", "showcase", "fair"] // helps with your data shape
+  comedy:    ["comedy","comedian","stand up","stand-up","standup","comic"],
+  music:     ["music","concert","gig","band","orchestra","live music"],
+  family:    ["family","kids","children","child","families","family-friendly","family friendly"],
+  sports:    ["sport","sports","boxing","snooker","cycling","football","tennis","run","marathon"],
+  dance:     ["dance","ballet","contemporary","hip hop","hip-hop"],
+  theatre:   ["theatre","theater","play","drama","stage"],
+  film:      ["film","cinema","movie","screening"],
+  festival:  ["festival","fair","market","street fair"],
+  exhibition:["exhibition","expo","showcase","gallery","art show"]
 };
 
 // ──────────────────────────────────────────────────────────────

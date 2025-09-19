@@ -136,7 +136,7 @@ app.get("/api/events/:id", async (req, res) => {
 // ──────────────────────────────────────────────────────────────
 let externalIntents = null;
 try {
-  // optional — if you created server/lib/intents.js
+  // optional — if you created server/lib/ai.js
   externalIntents = await import("./lib/ai.js");
   if (!externalIntents || typeof externalIntents.classifyQuery !== "function") {
     externalIntents = null;
