@@ -4,3 +4,5 @@ mobile-app/
 server/*.bak
 
 web/patch-app.mjs
+
+server/.env
