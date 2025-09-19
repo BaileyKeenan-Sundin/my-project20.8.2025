@@ -2,3 +2,5 @@ mobile-app/
 
 # Local backups
 server/*.bak
+
+web/patch-app.mjs
