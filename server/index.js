@@ -236,7 +236,10 @@ app.post("/ai/chat", async (req, res) => {
 
       await streamChatFn({
         userText: message,
-        onToken: (t) => res.write(`data: ${JSON.stringify({ token: t })}\n\n`),
+        onToken: (t) =>
+          res.write(
+            `data: ${JSON.stringify({ token: t, type: "text", delta: t })}\n\n`
+          ),
         onDone: (final) => {
           res.write("event: done\n");
           res.write(`data: ${JSON.stringify({ text: final })}\n\n`);
@@ -259,6 +262,76 @@ app.post("/ai/chat", async (req, res) => {
     });
     const json = await r.json();
     res.status(r.status).json(json);
+  } catch (e) {
+    if (!res.headersSent) res.status(500).json({ error: String(e) });
+    else try { res.end(); } catch {}
+  }
+});
+
+// NEW: GET version for EventSource clients (Chat.jsx uses GET ?message=...)
+// Mirrors POST SSE behavior and also streams a one-shot hits payload on fallback.
+app.get("/ai/chat", async (req, res) => {
+  try {
+    const message = String(req.query?.message || "").trim();
+    if (!message) return res.status(400).json({ error: "message required" });
+
+    if (streamChatFn) {
+      res.setHeader("Content-Type", "text/event-stream");
+      res.setHeader("Cache-Control", "no-cache, no-transform");
+      res.setHeader("Connection", "keep-alive");
+      if (typeof res.flushHeaders === "function") res.flushHeaders();
+
+      res.write("event: hello\n");
+      res.write('data: {"ok":true}\n\n');
+
+      await streamChatFn({
+        userText: message,
+        onToken: (t) =>
+          res.write(
+            `data: ${JSON.stringify({ token: t, type: "text", delta: t })}\n\n`
+          ),
+        onDone: (final) => {
+          res.write("event: done\n");
+          res.write(`data: ${JSON.stringify({ text: final })}\n\n`);
+          res.end();
+        },
+        onError: (err) => {
+          res.write("event: error\n");
+          res.write(`data: ${JSON.stringify({ error: String(err) })}\n\n`);
+          res.end();
+        },
+      });
+      return;
+    }
+
+    // Fallback to /ai/ask (JSON) and stream as SSE frames the way Chat.jsx expects
+    const r = await fetch("http://127.0.0.1:" + PORT + "/ai/ask", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        message,
+        limit: Number(req.query?.limit || 10),
+      }),
+    });
+    const json = await r.json();
+
+    res.setHeader("Content-Type", "text/event-stream");
+    res.setHeader("Cache-Control", "no-cache, no-transform");
+    res.setHeader("Connection", "keep-alive");
+    if (typeof res.flushHeaders === "function") res.flushHeaders();
+
+    res.write("event: hello\n");
+    res.write('data: {"ok":true}\n\n');
+
+    // Send hits to populate the sidebar list
+    if (Array.isArray(json?.hits)) {
+      res.write(`data: ${JSON.stringify({ type: "hits", hits: json.hits })}\n\n`);
+    }
+
+    // Send final text and close
+    res.write("event: done\n");
+    res.write(`data: ${JSON.stringify({ text: json?.answer || "" })}\n\n`);
+    res.end();
   } catch (e) {
     if (!res.headersSent) res.status(500).json({ error: String(e) });
     else try { res.end(); } catch {}

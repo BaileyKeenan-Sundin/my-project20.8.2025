@@ -1,30 +1,35 @@
 // server/lib/llm.js
 import fetch from "node-fetch";
 
+const API_BASE = process.env.OPENAI_API_BASE || "https://api.openai.com/v1";
+
+/** Build headers; add Authorization only if a key is present. */
+function buildHeaders(apiKey = "") {
+  const h = { "Content-Type": "application/json" };
+  if (apiKey && apiKey.trim()) h.Authorization = `Bearer ${apiKey}`;
+  return h;
+}
+
 /**
  * Non-streaming helper (JSON in, single string out).
+ * Works with OpenAI/Ollama/Groq when API_BASE + model are set appropriately.
  */
 export async function askLLM({
   prompt,
-  system = "You are a concise assistant.",
+  system = process.env.LLM_SYSTEM_PROMPT || "You are a concise assistant.",
   apiKey = process.env.OPENAI_API_KEY || "",
   model = process.env.OPENAI_MODEL || "gpt-4o-mini",
   maxTokens = 350,
   temperature = 0.2,
   timeoutMs = 15000,
 }) {
-  if (!apiKey) throw new Error("OPENAI_API_KEY not set");
-
   const ctrl = new AbortController();
   const t = setTimeout(() => ctrl.abort(), timeoutMs);
 
   try {
-    const r = await fetch("https://api.openai.com/v1/chat/completions", {
+    const r = await fetch(`${API_BASE}/chat/completions`, {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${apiKey}`,
-      },
+      headers: buildHeaders(apiKey),
       body: JSON.stringify({
         model,
         temperature,
@@ -46,6 +51,7 @@ export async function askLLM({
     const data = await r.json();
     const text =
       data?.choices?.[0]?.message?.content?.trim?.() ||
+      data?.choices?.[0]?.delta?.content?.trim?.() ||
       data?.choices?.[0]?.text?.trim?.() ||
       "";
     return text;
@@ -55,15 +61,12 @@ export async function askLLM({
 }
 
 /**
- * Streaming helper (SSE from OpenAI → token callbacks).
- * Calls:
- *  - onToken(token)
- *  - onDone(finalText)
- *  - onError(error)
+ * Streaming helper.
+ * Robust parser: supports both SSE ("data: {...}", "[DONE]") and raw JSON chunk streams.
  */
 export async function streamChat({
   userText,
-  system = "You are a concise assistant.",
+  system = process.env.LLM_SYSTEM_PROMPT || "You are a concise assistant.",
   apiKey = process.env.OPENAI_API_KEY || "",
   model = process.env.OPENAI_MODEL || "gpt-4o-mini",
   maxTokens = 500,
@@ -73,21 +76,13 @@ export async function streamChat({
   onDone = () => {},
   onError = () => {},
 }) {
-  if (!apiKey) {
-    onError(new Error("OPENAI_API_KEY not set"));
-    return;
-  }
-
   const ctrl = new AbortController();
   const t = setTimeout(() => ctrl.abort(), timeoutMs);
 
   try {
-    const r = await fetch("https://api.openai.com/v1/chat/completions", {
+    const r = await fetch(`${API_BASE}/chat/completions`, {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${apiKey}`,
-      },
+      headers: buildHeaders(apiKey),
       body: JSON.stringify({
         model,
         temperature,
@@ -108,31 +103,51 @@ export async function streamChat({
 
     let full = "";
     const decoder = new TextDecoder();
+    let buffer = "";
 
-    // node-fetch supports async iteration of the body stream
     for await (const chunk of r.body) {
       const str = decoder.decode(chunk, { stream: true });
-      const lines = str.split("\n");
-      for (const line of lines) {
-        const l = line.trim();
-        if (!l || !l.startsWith("data:")) continue;
-        const data = l.slice(5).trim();
-        if (data === "[DONE]") {
+      buffer += str;
+
+      // Split on newlines; keep the last partial line in buffer
+      const lines = buffer.split(/\r?\n/);
+      buffer = lines.pop() ?? "";
+
+      for (const raw of lines) {
+        const line = raw.trim();
+        if (!line) continue;
+
+        // Support SSE ("data: {...}") and plain JSON lines
+        let payload = line.startsWith("data:") ? line.slice(5).trim() : line;
+
+        if (payload === "[DONE]") {
           onDone(full);
           return;
         }
+
         try {
-          const json = JSON.parse(data);
-          const delta = json?.choices?.[0]?.delta?.content;
+          const json = JSON.parse(payload);
+          const delta =
+            json?.choices?.[0]?.delta?.content ??
+            json?.choices?.[0]?.message?.content ??
+            "";
+
           if (typeof delta === "string" && delta.length) {
             full += delta;
             onToken(delta);
           }
+
+          const fr = json?.choices?.[0]?.finish_reason;
+          if (fr && fr !== null) {
+            onDone(full);
+            return;
+          }
         } catch {
-          // ignore partial JSON frames
+          // Ignore partial / non-JSON lines
         }
       }
     }
+
     onDone(full);
   } catch (err) {
     onError(err);
