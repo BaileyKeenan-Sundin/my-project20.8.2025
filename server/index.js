@@ -208,10 +208,50 @@ app.post("/ai/ask", async (req, res) => {
   }
 });
 
-// keep /ai/chat for the UI — proxy to /ai/ask
+// ──────────────────────────────────────────────────────────────
+// AI: streaming chat endpoint (/ai/chat) via SSE
+// Falls back to /ai/ask if streaming isn't available
+// ──────────────────────────────────────────────────────────────
+let streamChatFn = null;
+try {
+  const llmMod = await import("./lib/llm.js");
+  if (llmMod && typeof llmMod.streamChat === "function") {
+    streamChatFn = llmMod.streamChat;
+  }
+} catch { /* no-op */ }
+
 app.post("/ai/chat", async (req, res) => {
   try {
-    const message = String(req.body?.message || "");
+    const message = String(req.body?.message || "").trim();
+    if (!message) return res.status(400).json({ error: "message required" });
+
+    if (streamChatFn) {
+      res.setHeader("Content-Type", "text/event-stream");
+      res.setHeader("Cache-Control", "no-cache, no-transform");
+      res.setHeader("Connection", "keep-alive");
+      if (typeof res.flushHeaders === "function") res.flushHeaders();
+
+      res.write("event: hello\n");
+      res.write('data: {"ok":true}\n\n');
+
+      await streamChatFn({
+        userText: message,
+        onToken: (t) => res.write(`data: ${JSON.stringify({ token: t })}\n\n`),
+        onDone: (final) => {
+          res.write("event: done\n");
+          res.write(`data: ${JSON.stringify({ text: final })}\n\n`);
+          res.end();
+        },
+        onError: (err) => {
+          res.write("event: error\n");
+          res.write(`data: ${JSON.stringify({ error: String(err) })}\n\n`);
+          res.end();
+        },
+      });
+      return;
+    }
+
+    // Fallback: proxy to /ai/ask (JSON)
     const r = await fetch("http://127.0.0.1:" + PORT + "/ai/ask", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -220,7 +260,8 @@ app.post("/ai/chat", async (req, res) => {
     const json = await r.json();
     res.status(r.status).json(json);
   } catch (e) {
-    res.status(500).json({ error: String(e) });
+    if (!res.headersSent) res.status(500).json({ error: String(e) });
+    else try { res.end(); } catch {}
   }
 });
 
