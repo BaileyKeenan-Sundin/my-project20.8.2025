@@ -1,18 +1,24 @@
 // server/lib/ai.js
-// Rule-based intent for lightweight "what's on" search.
-// Uses server/lib/events.js::findEvents() as the single source of truth.
+// Intent + answer helpers used by /ai/ask.
+// Design goals:
+// 1) Keep the raw user message in the search query so results match your SSE path.
+// 2) Add lightweight, extensible category synonyms (no rigid hard-coding).
+// 3) Provide simple, stable text answers + compact hit list for the UI.
 
 import { findEvents } from "./events.js";
 
-// Tune how many hits we return in one answer.
-// (Matches what you've been testing: "Showing up to 10.")
 const SHOW_LIMIT = 10;
 
-const CATEGORY_KEYWORDS = {
+// Small, extensible seed list — we *append* these to the user's text
+// instead of replacing it, so we don't get brittle behavior.
+const CATEGORY_SYNONYMS = {
+  music: [
+    "concert", "gig", "band", "orchestra", "live", "tour",
+    "festival", "dj", "singer", "choir", "performance"
+  ],
   comedy:    ["comedy","comedian","stand up","stand-up","standup","comic"],
-  music:     ["music","concert","gig","band","orchestra","live music"],
-  family:    ["family","kids","children","child","families","family-friendly","family friendly"],
-  sports:    ["sport","sports","boxing","snooker","cycling","football","tennis","run","marathon"],
+  family:    ["family","kids","children","child","family-friendly","family friendly"],
+  sports:    ["sport","sports","boxing","snooker","cycling","football","tennis","run","marathon","ice hockey","hockey"],
   dance:     ["dance","ballet","contemporary","hip hop","hip-hop"],
   theatre:   ["theatre","theater","play","drama","stage"],
   film:      ["film","cinema","movie","screening"],
@@ -20,13 +26,8 @@ const CATEGORY_KEYWORDS = {
   exhibition:["exhibition","expo","showcase","gallery","art show"]
 };
 
-// ──────────────────────────────────────────────────────────────
-// Helpers
-// ──────────────────────────────────────────────────────────────
-function normalizeText(s) {
-  if (!s) return "";
-  // unify quotes/dashes & collapse whitespace
-  return String(s)
+function norm(s) {
+  return String(s || "")
     .replace(/[“”]/g, '"')
     .replace(/[‘’]/g, "'")
     .replace(/[–—]/g, "-")
@@ -34,48 +35,26 @@ function normalizeText(s) {
     .trim();
 }
 
-function detectCategory(text) {
-  const t = text.toLowerCase();
-  for (const [cat, kws] of Object.entries(CATEGORY_KEYWORDS)) {
-    if (kws.some((k) => t.includes(k))) return cat;
-  }
-  return null;
-}
-
-function detectQuotedName(text) {
-  const m = text.match(/"([^"]+)"|“([^”]+)”/);
-  return m ? (m[1] || m[2]) : null;
-}
-
-function detectNameish(text) {
-  const q = detectQuotedName(text);
-  if (q) return q;
-
-  // explicit patterns like: events about X, shows about X, called X, named X
-  const m =
-    text.match(/\babout\s+([a-z0-9][\w\s\-&']{2,})$/i) ||
-    text.match(/\b(called|named)\s+([a-z0-9][\w\s\-&']{2,})$/i);
-  if (m) return (m[1] && !m[2] ? m[1] : m[2]).trim();
-
-  // fallback: if user typed something that isn't a generic "what's on" ask
-  // and doesn't look like a pure category/date ask, treat the whole thing as a title query.
-  const t = text.toLowerCase();
-  const generic =
-    detectWhatsOn(text) || detectCategory(text) || detectDateLabel(text);
-  if (!generic && t.length >= 3) return text.trim();
-
-  return null;
-}
-
-function detectWhatsOn(text) {
-  const t = text.toLowerCase();
-  return /(what'?s\s+on|whats\s+on|what is on|anything on|events|shows|what to see|what to do|happening)/.test(
+function detectWhatsOn(t) {
+  t = t.toLowerCase();
+  return /(what'?s\s+on|whats\s+on|what is on|anything on|events|shows|happening|what to see|what to do)/.test(
     t
   );
 }
 
-// We’ll enable real date filtering once start/end are populated.
-// For now we just annotate the phrase so your answer reads naturally.
+function detectCategory(text) {
+  const t = text.toLowerCase();
+  for (const [cat, kws] of Object.entries(CATEGORY_SYNONYMS)) {
+    if (kws.some(k => t.includes(k)) || t.includes(cat)) return cat;
+  }
+  return null;
+}
+
+function detectQuoted(text) {
+  const m = text.match(/"([^"]+)"|“([^”]+)”/);
+  return m ? (m[1] || m[2]) : null;
+}
+
 function detectDateLabel(text) {
   const t = text.toLowerCase();
   if (/\btoday\b/.test(t)) return "today";
@@ -86,81 +65,77 @@ function detectDateLabel(text) {
   return null;
 }
 
-// ──────────────────────────────────────────────────────────────
-export async function askAI(rawText) {
-  const text = normalizeText(rawText);
-  if (!text) {
-    return {
-      answer:
-        'Ask me things like "what’s on", "what comedy is on", or "events about \\"The Maccabees\\"".',
-      hits: []
-    };
+// Build the string we pass into findEvents({ q })
+// Key idea: start with the *raw* user message, then append light synonyms.
+// If a quoted title/artist is present, prefer that as the core term.
+function buildSearchQ(text) {
+  const qParts = [];
+  const quoted = detectQuoted(text);
+  if (quoted) {
+    qParts.push(quoted);
+  } else {
+    // keep the original text so your ranker behaves like the SSE path
+    qParts.push(text);
   }
-
-  const wantsWhatsOn = detectWhatsOn(text);
   const cat = detectCategory(text);
-  const nameQ = detectNameish(text);
-  const dateLabel = detectDateLabel(text);
-
-  // Pull from normalized/cached source
-  const pool = await findEvents({ limit: 500 });
-  let filtered = pool;
-
-  // Name/title filter
-  if (nameQ) {
-    const q = nameQ.toLowerCase();
-    filtered = filtered.filter((e) =>
-      (e.title || "").toLowerCase().includes(q)
-    );
+  if (cat && CATEGORY_SYNONYMS[cat]) {
+    qParts.push(...CATEGORY_SYNONYMS[cat]);
   }
-
-  // Category filter (prefer e.category, fallback to title contains)
-  if (cat) {
-    const c = cat.toLowerCase();
-    filtered = filtered.filter((e) => {
-      if (e.category && typeof e.category === "string") {
-        return e.category.toLowerCase().includes(c);
-      }
-      return (e.title || "").toLowerCase().includes(c);
+  // de-dupe tokens but keep order reasonably stable
+  const seen = new Set();
+  const toks = qParts
+    .join(" ")
+    .split(/\s+/)
+    .map(t => t.toLowerCase())
+    .filter(t => {
+      if (!t) return false;
+      if (seen.has(t)) return false;
+      seen.add(t);
+      return true;
     });
-  }
+  return toks.join(" ");
+}
 
-  // Date filter (placeholder: activates once e.start is real Date or ISO)
-  if (dateLabel) {
-    // Example scaffold (kept inert until start dates exist):
-    // const now = new Date();
-    // const startWindow = new Date(now);
-    // const endWindow = new Date(now);
-    // switch (dateLabel) { ... }
-    // filtered = filtered.filter(e => e.start && withinWindow(e.start, startWindow, endWindow));
-  }
+// ── Exports used by server/index.js ────────────────────────────
 
-  // If user didn’t ask a recognizable thing, guide them.
-  if (!wantsWhatsOn && !cat && !nameQ) {
-    return {
-      answer:
-        'I can help you find events. Try "what’s on", "what comedy is on", or \'events about "The Maccabees"\'.',
-      hits: []
-    };
-  }
-
-  const total = filtered.length;
-  const shown = filtered
-    .slice(0, SHOW_LIMIT)
-    .map((e) => ({ id: String(e.id), title: e.title }));
-
+export function classifyQuery(rawMessage) {
+  const text = norm(rawMessage);
   const parts = [];
-  if (cat) parts.push(`${cat}`);
-  if (nameQ) parts.push(`about "${nameQ}"`);
-  if (dateLabel) parts.push(`${dateLabel}`);
+  if (!text) return { q: "", parts };
 
-  const facet = parts.length ? ` ${parts.join(" ")}` : "";
-  const preface =
+  const cat = detectCategory(text);
+  const quoted = detectQuoted(text);
+  const dateLabel = detectDateLabel(text);
+  const whatsOn = detectWhatsOn(text);
+
+  if (cat) parts.push(cat);
+  if (quoted) parts.push(`about "${quoted}"`);
+  if (dateLabel) parts.push(dateLabel);
+  if (!cat && !quoted && whatsOn) parts.push("what's on");
+
+  const q = buildSearchQ(text);
+  return { q, parts };
+}
+
+export function buildAnswer({ parts = [], total = 0, shown = [] }) {
+  const shownCount = shown.length;
+  const facet = parts.length ? ` for ${parts.join(" ")}` : "";
+  const answer =
     total === 0
-      ? `I couldn’t find any events${facet ? " for" + facet : ""}.`
-      : `I found ${total} event${total === 1 ? "" : "s"}${
-          facet ? " for " + facet : ""
-        }. Showing up to ${shown.length}.`;
+      ? `I couldn’t find any events${facet || ""}.`
+      : `I found ${total} event${total === 1 ? "" : "s"}${facet || ""}. Showing up to ${Math.min(
+          SHOW_LIMIT,
+          shownCount
+        )}.`;
+  // Keep hits minimal and predictable for UI
+  const hits = shown.map(e => ({ id: String(e.id), title: e.title }));
+  return { answer, hits };
+}
 
-  return { answer: preface, hits: shown };
+// Optional: still available if anything calls it directly (not required by /ai/ask)
+export async function askAI(rawText) {
+  const { q, parts } = classifyQuery(rawText);
+  const rows = await findEvents({ limit: 120, q });
+  const shown = rows.slice(0, SHOW_LIMIT);
+  return buildAnswer({ parts, total: rows.length, shown });
 }
