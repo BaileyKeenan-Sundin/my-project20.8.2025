@@ -617,44 +617,11 @@ app.get("/api/events", async (req, res) => {
 
 app.get("/api/events/:id", async (req, res) => {
   try {
-    const id = String(req.params.id || "").trim();
-    if (!id) return res.status(400).json({ error: "missing id" });
-
-    const core = await getEventById(id);
-    const base = {
-      id: String((core && core.id) ?? id),
-      title: (core && core.title) || "",
-      date: (core && core.date) || null,
-      venue: (core && core.venue) || "",
-      url: (core && core.url) || (WP ? `${WP.replace(/\/$/, "")}/?p=${id}` : "")
-    };
-
-    const doEnrich = ["1","true","yes"].includes(String(req.query.enrich || "").toLowerCase());
-    const clean = (v) => (v || "").toString().replace(/[{}]+/g, "").replace(/\s+/g, " ").trim();
-
-    if (!doEnrich) {
-      return res.json({
-        id: base.id,
-        title: base.title,
-        date: base.date || null,
-        venue: clean(base.venue),
-        url: base.url
-      });
-    }
-
-    const withUrls = await augmentWithUrls([base]);
-    const enriched = await enrichEvents(withUrls);
-    const one = (enriched && enriched[0]) || base;
-
-    return res.json({
-      id: String(one.id || base.id),
-      title: one.title || base.title,
-      date: one.date || null,
-      venue: clean(one.venue || base.venue),
-      url: one.url || base.url
-    });
-  } catch (err) {
-    res.status(500).json({ error: String((err && err.message) || err) });
+    const row = await getEventById(req.params.id);
+    if (!row) return res.status(404).json({ error: "not found" });
+    res.json(row);
+  } catch (e) {
+    res.status(500).json({ error: String(e) });
   }
 });
 
