@@ -656,7 +656,7 @@ app.get("/api/events/:id", async (req, res) => {
   } catch (err) {
     res.status(500).json({ error: String((err && err.message) || err) });
   }
-});
+}););
 
 // ──────────────────────────────────────────────────────────────
 /** Admin + Webhooks */
