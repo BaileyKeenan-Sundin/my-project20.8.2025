@@ -6,3 +6,4 @@ server/*.bak
 web/patch-app.mjs
 
 server/.env
+server/index.js.bak.*
